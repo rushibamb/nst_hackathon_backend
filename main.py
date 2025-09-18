@@ -1,5 +1,6 @@
 ﻿from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+import os
 from pydantic import BaseModel
 from typing import List, Literal
 from datetime import datetime
@@ -12,16 +13,31 @@ app = FastAPI(
     description="API for simulating spacecraft interception missions to 3I/ATLAS"
 )
 
-# CORS middleware
+# -------------------------
+# CORS Middleware
+# -------------------------
+# Allowed origins: localhost (dev) + Vercel frontend (prod)
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS", "").strip()
+if allowed_origins_env:
+    allowed_origins = [o.strip() for o in allowed_origins_env.split(",") if o.strip()]
+else:
+    # Local development fallback
+    allowed_origins = [
+        "http://localhost:3000",
+        "https://localhost:3000",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "https://localhost:3000"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Pydantic models
+# -------------------------
+# Pydantic Models
+# -------------------------
 class MissionParameters(BaseModel):
     launch_date: str
     propulsion_type: Literal["chemical", "ion", "solar-sail"]
@@ -42,7 +58,9 @@ class AtlasInfo(BaseModel):
     characteristics: dict
     scientific_value: str
 
-# ✅ Debug endpoint
+# -------------------------
+# Debug Endpoint
+# -------------------------
 @app.post("/api/debug")
 async def debug_request(request: Request):
     data = await request.json()
@@ -54,21 +72,20 @@ async def debug_request(request: Request):
     if raw_date:
         try:
             parsed_date = datetime.fromisoformat(raw_date.replace("T", " "))
-            print("Parsed ISO date:", parsed_date)
-        except Exception as e:
-            print("ISO parse failed:", e)
+        except:
             try:
                 parsed_date = datetime.fromtimestamp(int(raw_date)/1000)
-                print("Parsed timestamp:", parsed_date)
-            except Exception as e2:
-                print("Timestamp parse failed:", e2)
+            except:
+                parsed_date = None
 
     return {
         "received": data,
         "parsed_date": str(parsed_date) if parsed_date else None
     }
 
-# Mission simulation logic
+# -------------------------
+# Mission Simulation Logic
+# -------------------------
 def calculate_mission_parameters(params: MissionParameters) -> MissionResults:
     ATLAS_VELOCITY = 60.0
     EARTH_ORBITAL_VELOCITY = 30.0
@@ -90,7 +107,6 @@ def calculate_mission_parameters(params: MissionParameters) -> MissionResults:
     base_travel_time = 2.0 + (current_distance - ATLAS_CLOSEST_EARTH_DISTANCE) * 1.5
     base_success = max(0.05, 0.8 - (current_distance - ATLAS_CLOSEST_EARTH_DISTANCE) * 0.2)
 
-    # Propulsion system capabilities
     propulsion_modifiers = {
         "chemical": {"delta_v_mult": 1.0, "time_mult": 0.8, "success_mod": -0.4, "fuel_efficiency": 0.3, "max_delta_v": 15.0},
         "ion": {"delta_v_mult": 0.7, "time_mult": 1.5, "success_mod": -0.2, "fuel_efficiency": 0.8, "max_delta_v": 25.0},
@@ -108,24 +124,19 @@ def calculate_mission_parameters(params: MissionParameters) -> MissionResults:
 
     date_penalty = min(days_diff / 30.0, 1.0)
 
-    # Delta-v calculations
     delta_v = base_delta_v * prop_mod["delta_v_mult"] * payload_mod["delta_v_mult"] * (1 + date_penalty * 0.2)
     velocity_matching_requirement = ATLAS_VELOCITY - EARTH_ORBITAL_VELOCITY
     total_delta_v = delta_v + velocity_matching_requirement
 
-    # Travel time
     travel_time = base_travel_time * prop_mod["time_mult"] * payload_mod["time_mult"] * (1 + date_penalty * 0.1)
 
-    # Success probability adjusted for propulsion limits
     excess_dv_ratio = max(0.0, (total_delta_v - prop_mod["max_delta_v"]) / prop_mod["max_delta_v"])
     success_probability = max(0.01, min(0.95,
         base_success * (1 - 0.5 * excess_dv_ratio) + prop_mod["success_mod"] + payload_mod["success_mod"] - date_penalty * 0.2
     ))
 
-    # Fuel cost
     fuel_cost = delta_v * (1 / prop_mod["fuel_efficiency"]) * (1 + payload_mod["delta_v_mult"] - 1)
 
-    # Mission status
     if launch_date.year > 2026:
         mission_status = "failure"
         success_probability = 0.0
@@ -160,10 +171,12 @@ def calculate_mission_parameters(params: MissionParameters) -> MissionResults:
         mission_log=mission_log
     )
 
+# -------------------------
 # API Endpoints
+# -------------------------
 @app.get("/")
 def root():
-    return {"message": "3I/ATLAS Mission Planner API", "version": "1.0.0", "endpoints": ["/simulate", "/atlas-info", "/health", "/api/debug"], "status": "operational"}
+    return {"message": "3I/ATLAS Mission Planner API", "version": "1.0.0", "status": "operational"}
 
 @app.get("/health")
 def health_check():
@@ -205,6 +218,9 @@ def get_mission_history():
         ]
     }
 
+# -------------------------
+# Run Server
+# -------------------------
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
